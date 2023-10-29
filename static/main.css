@@ -61,6 +61,7 @@ input[type="submit"] {
   cursor: pointer;
 }
 .result {
+  white-space: pre-wrap;
   font-weight: bold;
   margin-top: 40px;
 }
