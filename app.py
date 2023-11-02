@@ -28,7 +28,7 @@ def handle_request():
         prompt = wrap_text_to_sql_prompt(question)
         sql_query = call_openai(prompt)
         return jsonify({"sql_query": sql_query})
-    return jsonify({"error": "Question parameter missing"})
+    return jsonify({"error": "Question missing"})
 
 
 def call_openai(content):
@@ -117,5 +117,5 @@ def execute_sql_query(sql_query):
         conn.close()
 
 
-if __name__ == "__main":
+if __name__ == "__main__":
     app.run(debug=True)
