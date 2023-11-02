@@ -13,7 +13,7 @@ openai.api_base = "https://api.openai-proxy.com/v1"
 def index():
     if request.method == "POST":
         question = request.form["animal"]
-        prompt = generate_prompt(question)
+        prompt = wrap_text_to_sql_prompt(question)
         return redirect(url_for("index", result=call_openai(prompt)))
 
     result = request.args.get("result")
@@ -25,7 +25,7 @@ def handle_request():
     data = request.get_json()
     question = data.get("question")
     if question:
-        prompt = generate_prompt(question)
+        prompt = wrap_text_to_sql_prompt(question)
         sql_query = call_openai(prompt)
         return jsonify({"sql_query": sql_query})
     return jsonify({"error": "Question parameter missing"})
@@ -41,8 +41,13 @@ def call_openai(content):
     return response.choices[0].message["content"]
 
 
-def agent(question):
-    s_content = generate_prompt(question)
+def benchmark_query(question):
+    """
+    The input is the user's query, and the output is a user-friendly answer. 
+    During this process, two calls to OpenAI are made, 
+    and exceptions that may occur during the calls need to be considered.
+    """
+    s_content = wrap_text_to_sql_prompt(question)
     sql = call_openai(s_content)
     
     sql_res = execute_sql_query(sql)
@@ -55,9 +60,20 @@ def agent(question):
     return a_res
     
     
+    
+def wrap_final_answer_prompt(question, sql_res):
+    """
+    Combining the original user query with the results obtained from the database, 
+    provide a user-friendly response in a conversational manner.
+    """
+    pass
 
 
-def generate_prompt(question):
+
+def wrap_text_to_sql_prompt(question):
+    """
+    Transforming the user's query into an executable SQL statement.
+    """
     return """
 你是一位 PostgreSQL 数据库专家.
 用户请求以 ```作为分隔符, \
