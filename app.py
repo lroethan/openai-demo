@@ -9,24 +9,52 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 openai.api_base = "https://api.openai-proxy.com/v1" 
 
 
-
-@app.route("/", methods=("GET", "POST"))
+@app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
         question = request.form["animal"]
         prompt = generate_prompt(question)
-        messages = [{"role": "user", "content": prompt}]
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0,  # this is the degree of randomness of the model's output
-        )
-        return redirect(url_for("index", result=response.choices[0].message["content"]))
+        return redirect(url_for("index", result=call_openai(prompt)))
 
     result = request.args.get("result")
-    print(result)
     return render_template("index.html", result=result)
 
+
+@app.route("/api", methods=["POST"])
+def handle_request():
+    data = request.get_json()
+    question = data.get("question")
+    if question:
+        prompt = generate_prompt(question)
+        sql_query = call_openai(prompt)
+        return jsonify({"sql_query": sql_query})
+    return jsonify({"error": "Question parameter missing"})
+
+
+def call_openai(content):
+    messages = [{"role": "user", "content": content}]
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        temperature=0,  
+    )
+    return response.choices[0].message["content"]
+
+
+def agent(question):
+    s_content = generate_prompt(question)
+    sql = call_openai(s_content)
+    
+    sql_res = execute_sql_query(sql)
+    
+    if isinstance(sql_res, str):
+        return "Failure"
+
+    a_content = generate_prompt_user(question, sql_res)
+    a_res = call_openai(a_content)
+    return a_res
+    
+    
 
 
 def generate_prompt(question):
@@ -52,21 +80,26 @@ SELECT * FROM forecast_result LIMIT 1;
 用户请求: ```{}```
 """.format(question)
 
-# TODO
-def execute_response_stmt(stmt):
-    conn = psycopg2.connect(
-        host="localhost",
-        port="5432",
-        database="your_database",
-        user="your_username",
-        password="your_password"
-    )
 
-    # Execute the stmt
-    with conn.cursor() as cursor:
-        cursor.execute(response)
-        result = cursor.fetchall()
-        print(result)
+def execute_sql_query(sql_query):
+    try:
+        conn = psycopg2.connect(
+            host="localhost",
+            port=5432,
+            database="your_database",
+            user="your_username",
+            password="your_password"
+        )
 
-    conn.close()
-        
+        with conn.cursor() as cursor:
+            cursor.execute(sql_query)
+            result = cursor.fetchall()
+            return result
+    except Exception as e:
+        return f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+
+if __name__ == "__main":
+    app.run(debug=True)
