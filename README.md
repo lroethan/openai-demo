@@ -9,7 +9,7 @@
 3. Navigate into the project directory:
 
    ```bash
-   $ cd openai-quickstart-python
+   $ cd openai-demo
    ```
 
 4. Create a new virtual environment:
