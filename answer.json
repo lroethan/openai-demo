@@ -1,0 +1,19 @@
+[
+    {
+      "question": "什么方法是在长时间序列预测上表现最好的？",
+      "result": "A: 根据您的问题，长时间序列预测中表现最好的方法是xxxxx。\n 希望这个回答可以帮助到您。"
+    },
+    {
+      "question": "请问 AutoCTS 在 ETTh1 数据集上表现如何？",
+      "result": "B: 根据您的问题，AutoCTS在ETTh1数据集上的表现如下：【数据库查询结果】。"
+    },
+    {
+      "question": "请问 LightPath 方法适合什么场景？一般在什么数据集上完成？",
+      "result": "C: 根据您的问题，LightPath方法适用于xxxx场景，一般在xxxx数据集上完成。"
+    },
+    {
+      "question": "请问 MagicScaler 能在 ETTh 数据集上达到什么样的表现？",
+      "result": "D: 根据您的问题，MagicScaler在ETTh数据集上的表现如下：【数据库查询结果】。"
+    }
+  ]
+  

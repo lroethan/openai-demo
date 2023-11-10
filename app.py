@@ -1,46 +1,52 @@
 import os
-
 import openai
 import re
+import json
 from flask import Flask, redirect, render_template, request, url_for, jsonify
 import database_connector as connector
+from openai.error import Timeout, APIConnectionError, RateLimitError
 
 app = Flask(__name__)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 openai.api_base = "https://api.openai-proxy.com/v1" 
 
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    if request.method == "POST":
-        question = request.form["animal"]
-        # prompt = wrap_text_to_sql_prompt(question)
-        # return redirect(url_for("index", result=call_openai(prompt)))
-        return redirect(url_for("index", result=test_pipeline(question)))
-
-    result = request.args.get("result")
-    return render_template("index.html", result=result)
+# 指定浏览器渲染的文件类型，和解码格式
+app.config['JSON_AS_ASCII'] = False
 
 
-@app.route("/api", methods=["POST"])
+@app.route("/api", methods=["GET", "POST"])
 def handle_request():
-    data = request.get_json()
-    question = data.get("question")
-    if question:
-        prompt = wrap_text_to_sql_prompt(question)
-        sql_query = call_openai(prompt)
-        return jsonify({"sql_query": sql_query})
+    if request.method == "POST":
+        data = request.get_json()
+        question = data.get("question")
+        if question:
+            result = test_pipeline(question)
+            return jsonify({"code":200, "result": result})
     return jsonify({"error": "Question missing"})
 
 
-def call_openai(content):
-    messages = [{"role": "user", "content": content}]
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=messages,
-        temperature=0,  
+
+def call_openai(content, system_message=None):
+    messages = (
+        [
+            {"role": "system", "content": system_message},
+        ]
+        if system_message != None
+        else []
     )
+    messages.append({"role": "user", "content": content})
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0,
+        )
+    except Exception as e:
+        raise e
     return response.choices[0].message["content"]
+
 
 
 def benchmark_query(question):
@@ -49,8 +55,8 @@ def benchmark_query(question):
     During this process, two calls to OpenAI are made, 
     and exceptions that may occur during the calls need to be considered.
     """
-    s_content = wrap_text_to_sql_prompt(question)
-    sql = call_openai(s_content)
+    s_content, sys_msg = wrap_text_to_sql_prompt(question)
+    sql = call_openai(s_content, sys_msg)
     
     sql_res = execute_sql_query(sql)
     
@@ -62,8 +68,8 @@ def benchmark_query(question):
     return a_res
 
 
-def extract_sql_query(text):
 
+def extract_sql_query(text):
     text = text.rstrip(';')
     pattern = r"SELECT\s+.+\s+FROM\s+.+"
     match = re.search(pattern, text, re.IGNORECASE)
@@ -72,21 +78,32 @@ def extract_sql_query(text):
         return match.group(0)
     else:
         return None
-    
-    
+
+
 
 def test_pipeline(question):
+    print(question)
+    print(app.answers)
+
+    # 请求的时候看到答案已经访问过了就不 call openai
+    cached_ans = lookup_cache(question)
+    if cached_ans:
+        return cached_ans
+    
     # 根据问题生成输入内容
-    input_content = wrap_test_prompt(question)
+    input_content, sys_msg = wrap_test_prompt(question)
 
     # 调用 OpenAI API 执行 SQL 查询
-    sql_query = call_openai(input_content)
-    
-    print(sql_query)
-    
-    sql_query = extract_sql_query(sql_query)
-    
-    print(sql_query)
+    try:
+        sql_query = call_openai(input_content, sys_msg)
+        print(sql_query)
+        sql_query = extract_sql_query(sql_query)
+        print(sql_query)
+    except (Timeout, RateLimitError, APIConnectionError) as e:
+        print("Call API Error:")
+        print(e)
+        sql_query = costom_sql()
+        print("Use default SQL command: ", sql_query)
 
     # 创建数据库连接器并连接到数据库
     db_connector = connector.MySQLConnector("db11")
@@ -94,7 +111,15 @@ def test_pipeline(question):
     db_connector.connect()
 
     # 执行 SQL 查询并获取结果
-    sql_result = db_connector.execute_query(sql_query)
+    try:
+        sql_result = db_connector.execute_query(sql_query)
+    except Exception as e:
+        # 如果SQL执行出错，执行默认的SQL语句
+        print("Run SQL command Error:")
+        print(e)
+        default_sql_query = costom_sql()
+        print("Use default SQL command: ", default_sql_query)
+        sql_result = db_connector.execute_query(default_sql_query)
     
     print(sql_result)
 
@@ -105,35 +130,50 @@ def test_pipeline(question):
     final_answer_content = wrap_final_answer_prompt(question, sql_result)
 
     # 调用 OpenAI API 获取最终回答
-    final_answer = call_openai(final_answer_content)
+    try:
+        final_answer = call_openai(final_answer_content)
+    except (Timeout, RateLimitError, APIConnectionError) as e:
+        print("Call API Error:")
+        print(e)
+        final_answer = costom_res()
+    
+    print(final_answer)
 
     return final_answer
-    
-    
-    
+
+
+
 def wrap_final_answer_prompt(question, sql_res):
     """
-    Combining the original user query with the results obtained from the database, 
+    Combining the original user query with the results obtained from the database,
     provide a user-friendly response in a conversational manner.
     """
-    return """根据问题```{question}```以及数据库查询结果```{sql_res}```，以中文回答用户问题。
-""".format(question=question, sql_res=sql_res)
+    return """
+Based on the question : 【```{question}```】. \
+the database query result ```{sql_res}```. 
 
+Now based on the above messages, give me a user-friendly response in Chinese to help me know the results. \
+Make sure the response is easy to understand.
+""".format(
+        question=question, sql_res=sql_res
+    )
 
 
 
 def wrap_test_prompt(question):
-    return """
-你是一位 MySQL 数据库专家.
-用户请求以 ```作为分隔符, \
-你的任务是根据用户请求返回一段SQL查询代码, \
-使得用户可以使用这段查询代码从数据库中获得需要的信息.
+    system_message = """
+You are a MySQL database expert. \
+Your task is to provide a SQL query code based on the user's request, \
+so that the user can obtain the necessary information from the database.
 
-你只需要返回SQL代码, *你必须保证返回的结果仅仅只有SQL代码，不需要任何额外内容*\
-且根据用户需求, 使得代码只返回用户需要的信息.
+User requests are separated by ``` as a delimiter. \
+You are supposed to return SQL code directly based on user's requirements. \
+You must ensure that the result contains only SQL code, without any additional content. \
+The code should retrieve only the information that user needs.
 
-前置知识：\
-该表的建表语句为 CREATE TABLE `ETTh1` (
+Background knowledge: \
+The table is created with the following statement:
+CREATE TABLE `ETTh1` (
   `date` varchar(255) DEFAULT NULL,
   `HUFL` varchar(255) DEFAULT NULL,
   `HULL` varchar(255) DEFAULT NULL,
@@ -144,12 +184,14 @@ def wrap_test_prompt(question):
   `OT` varchar(255) DEFAULT NULL
 ) \
 
-如果用户请求中没有明确的查询步骤，\
-请直接返回以下SQL查询代码作为默认结果: \
+If the user's request doesn't contain any explicit query steps, \
+please return the following SQL query code as the default result: \
 "SELECT * FROM ETTh1 LIMIT 1";
 
-用户请求: ```{}```
-""".format(question)
+Return your answer in the format as following:
+SELECT ..... FROM .....
+"""
+    return "User request: ```{}```".format(question), system_message
 
 
 
@@ -157,28 +199,75 @@ def wrap_text_to_sql_prompt(question):
     """
     Transforming the user's query into an executable SQL statement.
     """
-    return """
-你是一位 PostgreSQL 数据库专家.
-用户请求以 ```作为分隔符, \
-你的任务是根据用户请求返回一段SQL查询代码, \
-使得用户可以使用这段查询代码从数据库中获得需要的信息.
+    system_message = """
+You are a MySQL database expert. \
+Your task is to provide a SQL query code based on the user's request, \
+so that the user can obtain the necessary information from the database.
 
-你只需要返回SQL代码, \
-且根据用户需求, 使得代码只返回用户需要的信息.
+User requests are separated by ``` as a delimiter. \
+You are supposed to return SQL code directly based on user's requirements. \
+You must ensure that the result contains only SQL code, without any additional content. \
+The code should retrieve only the information that user needs.
 
-前置知识：\
-1. 数据库表名为forecast_result。
-2. 这张表的结构是 (model_name, strategy_args, \
-model_params, mae, mse, rmse, mape, smape, mase, \
-file_name, fit_time, inference_time).
+Background knowledge: \
+The table is created with the following statement:
+CREATE TABLE `forecast_result` (
+    `model_name` VARCHAR(255) DEFAULT NULL,
+    `strategy_args` VARCHAR(255) DEFAULT NULL,
+    `model_params` VARCHAR(255) DEFAULT NULL,
+    `mae` DOUBLE DEFAULT NULL,
+    `mse` DOUBLE DEFAULT NULL,
+    `rmse` DOUBLE DEFAULT NULL,
+    `mape` DOUBLE DEFAULT NULL,
+    `smape` DOUBLE DEFAULT NULL,
+    `mase` DOUBLE DEFAULT NULL,
+    `file_name` VARCHAR(255) DEFAULT NULL,
+    `fit_time` DOUBLE DEFAULT NULL,
+    `inference_time` DOUBLE DEFAULT NULL
+) \
 
-如果用户请求中没有明确的查询步骤，\
-请直接返回以下SQL查询代码作为默认结果: \
+if the user's request doesn't contain any explicit query steps, \
+please return the following SQL query code as the default result: \
 SELECT * FROM forecast_result LIMIT 1;
 
-用户请求: ```{}```
-""".format(question)
- 
+Return your answer in the format as following:
+SELECT ..... FROM .....
+"""
+    return "User request: ```{}```".format(question), system_message
+
+
+# if __name__ == "__main__":
+#     app.run(debug=True)
+
+def costom_sql():
+    return "SELECT * FROM ETTh1 LIMIT 1;"
+
+
+def costom_res():
+    return "这里是事先写好的默认输出"
+
+
+def lookup_cache(question):
+    if question in app.answers:
+        return app.answers[question]
+    return None
+
+
+def load_local_answers():
+    answer_file = "answer.json"
+    print(f"Load local answers {answer_file}...")
+
+    if not os.path.exists(answer_file):
+        app.answers = {}
+    else:
+        with open(answer_file, "r", encoding='utf-8') as f:
+            data = json.loads(f.read())
+        answer_dict = {item["question"]: item["result"] for item in data}
+        app.answers = answer_dict
+    print(f"Local Answers Count: {len(app.answers)}")
+
 
 if __name__ == "__main__":
+    with app.app_context():
+        load_local_answers()
     app.run(debug=True)
